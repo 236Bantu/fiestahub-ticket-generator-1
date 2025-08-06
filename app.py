@@ -1,98 +1,67 @@
-
 import streamlit as st
-import json
-import firebase_admin
-from firebase_admin import credentials, firestore
 import qrcode
+from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A6
-from reportlab.lib.utils import ImageReader
-from PIL import Image
-import io
-import os
-import datetime
+from reportlab.lib.units import mm
+import pyrebase
+import json
+import base64
 
-# 🔐 Load Firebase credentials from Streamlit secrets
-if not firebase_admin._apps:
-    cred_dict = json.loads(st.secrets["FIREBASE_CREDENTIALS"])
-    cred = credentials.Certificate(cred_dict)
-    firebase_admin.initialize_app(cred)
+# Firebase credentials from Streamlit secrets
+cred_dict = json.loads(st.secrets["FIREBASE_CREDENTIALS"])
 
-# ✅ Firestore database instance
-db = firestore.client()
+firebase_config = {
+    "apiKey": cred_dict["private_key_id"],
+    "authDomain": f"{cred_dict['project_id']}.firebaseapp.com",
+    "databaseURL": "",
+    "projectId": cred_dict["project_id"],
+    "storageBucket": f"{cred_dict['project_id']}.appspot.com",
+    "messagingSenderId": cred_dict["client_id"],
+    "appId": "your-app-id",
+    "serviceAccount": cred_dict
+}
 
-# Title
-st.title("Fiesta Hub - Ticket Generator 🎟️")
+firebase = pyrebase.initialize_app(firebase_config)
+storage = firebase.storage()
 
-# Ticket type
-ticket_type = st.selectbox("Select Ticket Type", ["Advance", "Gate"])
+st.title("🎟️ Fiesta Hub Ticket Generator")
 
-# Customer input form
-st.subheader("Fill Your Details")
-name = st.text_input("Full Name")
-mpesa_code = st.text_input("M-Pesa Code")
+name = st.text_input("Enter your full name")
+mpesa_code = st.text_input("Enter your M-Pesa payment code")
+submit = st.button("Generate Ticket")
 
-# Submit button
-if st.button("Generate Ticket"):
-    if not name or not mpesa_code:
-        st.warning("Please fill in all the fields.")
+def generate_qr_code(data):
+    qr = qrcode.make(data)
+    buffer = BytesIO()
+    qr.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+def generate_pdf(name, mpesa_code):
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=A6)
+
+    p.drawString(30, 150, "🎉 Colour Splash 3.0")
+    p.drawString(30, 135, f"Name: {name}")
+    p.drawString(30, 120, f"Code: {mpesa_code}")
+    p.drawString(30, 105, "Date: 24 August 2025")
+    p.drawString(30, 90, "Venue: Canaville Resort")
+
+    qr_buf = generate_qr_code(f"{name}-{mpesa_code}")
+    p.drawImage(qr_buf, 30, 20, width=60*mm, height=60*mm)
+
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    return buffer
+
+if submit:
+    if name and mpesa_code:
+        st.success("Ticket generated!")
+        pdf_file = generate_pdf(name, mpesa_code)
+        b64 = base64.b64encode(pdf_file.read()).decode()
+        href = f'<a href="data:application/octet-stream;base64,{b64}" download="ticket.pdf">📥 Download Your Ticket</a>'
+        st.markdown(href, unsafe_allow_html=True)
     else:
-        # Check if MPesa code exists in database
-        existing = db.collection("tickets").where("mpesa_code", "==", mpesa_code).stream()
-        if any(existing):
-            st.error("This M-Pesa code has already been used. Please use a unique one.")
-        else:
-            # Save to Firebase
-            db.collection("tickets").add({
-                "name": name,
-                "mpesa_code": mpesa_code,
-                "ticket_type": ticket_type,
-                "scanned": False,
-                "timestamp": datetime.datetime.now()
-            })
-
-            # Generate QR code
-            qr_data = f"{name} | {mpesa_code}"
-            qr_img = qrcode.make(qr_data)
-
-            # Prepare ticket background and logo
-            background_path = "ticket_background.jpg"  # must be in repo
-            logo_path = "fiesta_logo.png"  # must be in repo
-
-            packet = io.BytesIO()
-            can = canvas.Canvas(packet, pagesize=A6)
-
-            # Draw background
-            if os.path.exists(background_path):
-                bg = ImageReader(background_path)
-                can.drawImage(bg, 0, 0, width=A6[0], height=A6[1])
-
-            # Draw logo
-            if os.path.exists(logo_path):
-                logo = ImageReader(logo_path)
-                can.drawImage(logo, 10, A6[1]-60, width=50, height=50)
-
-            # Draw ticket info
-            can.setFont("Helvetica-Bold", 10)
-            can.drawString(10, A6[1]-70, f"Name: {name}")
-            can.drawString(10, A6[1]-85, f"Ticket Type: {ticket_type}")
-            can.drawString(10, A6[1]-100, f"M-Pesa: {mpesa_code}")
-
-            # Draw QR code
-            qr_buffer = io.BytesIO()
-            qr_img.save(qr_buffer)
-            qr_buffer.seek(0)
-            qr_reader = ImageReader(qr_buffer)
-            can.drawImage(qr_reader, A6[0]-80, 10, width=70, height=70)
-
-            can.save()
-            packet.seek(0)
-
-            # Output ticket
-            st.success("Ticket Generated Successfully!")
-            st.download_button(
-                label="Download Your Ticket 🎫",
-                data=packet,
-                file_name=f"{name.replace(' ', '_')}_ticket.pdf",
-                mime="application/pdf"
-            )
+        st.error("Please fill in all the fields.")
